@@ -12,11 +12,14 @@ This document outlines the design for the macro-architecture and orchestration l
 ## 2. System Components
 
 ### 2.1. CLI Layer (`Click`)
-The entrypoint will be a Click command that parses user inputs and triggers the LangGraph workflow.
+The entrypoint uses a Click group with two subcommands:
 
-*   **Command:** `extract`
-*   **Arguments:** `[INPUT_FILES]...` (Accepts multiple file paths, validates existence).
-*   **Options:** `-o, --output` (Target markdown file path, defaults to `output.md`).
+*   **`extract`** — Process one or more files into a single Markdown document.
+    *   **Arguments:** `[INPUT_FILES]...` (Accepts multiple file paths, validates existence).
+    *   **Options:** `-o, --output` (Target markdown file path, defaults to `output.md`).
+*   **`batch`** — Convert all supported files in a directory, each to its own Markdown file.
+    *   **Arguments:** `INPUT_DIR` (Directory path, validates existence).
+    *   **Options:** `-o, --output` (Output directory path, required).
 
 ### 2.2. Graph State Definition (`LangGraph State`)
 The core of LangGraph is the state object passed between nodes. We will define a strict `TypedDict` (or Pydantic model) acting as the single source of truth for the workflow's context.
@@ -59,27 +62,18 @@ The LangGraph `StateGraph` will be wired linearly, as no complex conditional bra
 ## 3. Concurrency & "Best Effort" Mechanism Details
 
 ### Concurrency Implementation
-In `node_extract`, we will define an asynchronous wrapper around the Task 3 execution logic:
+In `node_extract`, we use an `asyncio.Semaphore` to control the maximum number of concurrent API requests (configurable via `EXTRACTION_CONCURRENCY` env var, default 8):
 
 ```python
-async def process_single_file(file_meta: dict) -> dict:
-    # Calls Task 3 logic (SiliconFlow API - Qwen3.6)
-    pass
+sem = asyncio.Semaphore(EXTRACTION_CONCURRENCY)
 
-async def execute_extraction_parallel(processed_files: List[Dict]) -> tuple[List, List]:
-    tasks = [process_single_file(f) for f in processed_files]
-    # return_exceptions=True ensures one failure doesn't cancel the other tasks
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    successes = []
-    failures = []
-    for file_meta, result in zip(processed_files, results):
-        if isinstance(result, Exception):
-            failures.append({"file": file_meta['original_path'], "error": str(result)})
-        else:
-            successes.append(result)
-            
-    return successes, failures
+async def extract_with_sem(p):
+    async with sem:
+        return await extract_page_knowledge(p["page_meta"], p["original_path"])
+
+tasks = [extract_with_sem(p) for p in all_pages]
+# return_exceptions=True ensures one failure doesn't cancel the other tasks
+results = await asyncio.gather(*tasks, return_exceptions=True)
 ```
 
 ### Best Effort Reporting

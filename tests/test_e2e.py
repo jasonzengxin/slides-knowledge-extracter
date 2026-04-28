@@ -3,7 +3,7 @@ from pathlib import Path
 from click.testing import CliRunner
 from PIL import Image
 
-from source.main import cli
+from source.main import extract
 
 @pytest.fixture
 def dummy_image(tmp_path: Path) -> Path:
@@ -26,7 +26,7 @@ def test_cli_e2e_extraction(dummy_image: Path, tmp_path: Path):
     
     # Run the CLI command
     # equivalent to: uv run extract <dummy_image> -o <output_md>
-    result = runner.invoke(cli, [str(dummy_image), "-o", str(output_md)])
+    result = runner.invoke(extract, [str(dummy_image), "-o", str(output_md)])
     
     # The CLI shouldn't crash entirely
     assert result.exit_code == 0, f"CLI crashed with error: {result.output}"

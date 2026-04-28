@@ -14,6 +14,8 @@ import os
 import shutil
 import uuid
 import subprocess
+import time
+import logging
 from pathlib import Path
 from typing import Dict, Any, List
 from PIL import Image
@@ -97,6 +99,7 @@ def execute_preprocessing(state: ExtractorState) -> Dict[str, Any]:
     返回需要更新进状态的新字典，键为 'processed_documents'。
     """
     setup_tmp_dir()
+    t0 = time.time()
     processed_documents = []
     
     for raw_path in state.get("raw_input_files", []):
@@ -134,5 +137,7 @@ def execute_preprocessing(state: ExtractorState) -> Dict[str, Any]:
             "pages": pages
         })
             
-    # 将处理好的文档元数据注入回状态流转字典中
+    total_pages = sum(len(doc["pages"]) for doc in processed_documents)
+    logging.info(f"Preprocessing done: {len(processed_documents)} file(s), {total_pages} pages in {time.time() - t0:.1f}s")
+
     return {"processed_documents": processed_documents}

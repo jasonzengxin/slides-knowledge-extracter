@@ -16,7 +16,8 @@ dependencies = [
     "tiktoken>=0.12.0",
 ]
 [project.scripts]
-extract = "source.main:cli"
+pdf-extract = "source.main:extract"
+pdf-batch = "source.main:batch"
 
 [dependency-groups]
 dev = [

@@ -11,13 +11,14 @@
 import base64
 import json
 import asyncio
+import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 from openai import AsyncOpenAI
 
 from source.state import ExtractorState
-from source.config import SILICONFLOW_API_KEY
+from source.config import SILICONFLOW_API_KEY, EXTRACTION_CONCURRENCY
 
 # 确保在初始化之前 API Key 是存在的
 if not SILICONFLOW_API_KEY:
@@ -59,6 +60,7 @@ async def extract_page_knowledge(page_meta: dict, original_path: str) -> str:
 
     # 我们使用 SiliconFlow 兼容的 response_format JSON 来强制大模型将结果包在一个 JSON 属性里
     # 这样能最大程度避免大模型在代码块外瞎解释，导致我们解析 Markdown 失败。
+    t0 = time.time()
     response = await client.chat.completions.create(
         model="Qwen/Qwen3.6-27B",
         messages=[
@@ -71,6 +73,7 @@ async def extract_page_knowledge(page_meta: dict, original_path: str) -> str:
         response_format={"type": "json_object"},
         temperature=0.1  # 极低的温度，确保抽取的确定性，减少幻觉
     )
+    logging.debug(f"Page {page_number} vision API took {time.time() - t0:.1f}s")
     
     # 解析 JSON 获取 Markdown
     raw_json = response.choices[0].message.content
@@ -112,17 +115,34 @@ async def execute_extraction_parallel(state: ExtractorState) -> Dict[str, Any]:
     if not all_pages:
         return {"extracted_md_files": [], "failed_extractions": []}
 
-    # 2. 创建并发协程任务
-    tasks = [
-        extract_page_knowledge(p["page_meta"], p["original_path"]) 
-        for p in all_pages
-    ]
-    
+    # 2. 创建并发协程任务（通过 Semaphore 控制最大并发数，避免打爆 API rate limit）
+    sem = asyncio.Semaphore(EXTRACTION_CONCURRENCY)
+    total = len(all_pages)
+    done_count = 0
+
+    async def extract_with_sem(p):
+        nonlocal done_count
+        async with sem:
+            result = await extract_page_knowledge(p["page_meta"], p["original_path"])
+            done_count += 1
+            if done_count % 5 == 0 or done_count == total:
+                logging.info(f"Extraction progress: {done_count}/{total} pages done")
+            return result
+
+    tasks = [extract_with_sem(p) for p in all_pages]
+
     # 3. 并发执行！
+    logging.info(f"Starting extraction of {total} pages (concurrency={EXTRACTION_CONCURRENCY})...")
+    t0 = time.time()
+
     # 重点：return_exceptions=True 是 "Best Effort" 机制的灵魂。
     # 它保证了哪怕第 50 页因为网络波动报错抛出 Exception，
     # asyncio.gather 也不会把其他 99 页的成功任务取消掉，而是把错误当作结果返回在列表中。
     results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    ok_count = sum(1 for r in results if not isinstance(r, Exception))
+    fail_count = total - ok_count
+    logging.info(f"Extraction finished: {total} pages in {time.time() - t0:.1f}s ({ok_count} ok, {fail_count} failed)")
     
     # 4. 统计成功与失败的记录
     successes = []

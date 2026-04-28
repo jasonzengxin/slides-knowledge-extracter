@@ -15,3 +15,7 @@ load_dotenv()
 # 如果你发现程序报错说没权限，第一件事就是去检查 .env 文件配好了没！
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY")
 KIMI_API_KEY = os.getenv("KIMI_API_KEY")
+GLM_API_KEY = os.getenv("GLM_API_KEY")
+
+# 视觉提取并发数（控制同时请求 SiliconFlow API 的最大数量）
+EXTRACTION_CONCURRENCY = int(os.getenv("EXTRACTION_CONCURRENCY", "8"))

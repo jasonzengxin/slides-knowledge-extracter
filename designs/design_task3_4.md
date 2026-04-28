@@ -79,65 +79,58 @@ async def extract_page_knowledge(page_meta: dict) -> str:
     return output_filename
 ```
 
-## 3. Task 4: Knowledge Synthesis Engine (Kimi)
+## 3. Task 4: Knowledge Synthesis Engine (Kimi + GLM Fallback)
 
-### 3.1. Kimi Integration via Anthropic Protocol
-Kimi provides an Anthropic-compatible API endpoint at `https://api.kimi.com/coding/`.
+### 3.1. Model Fallback Strategy
+
+The synthesis engine uses a **Kimi → GLM-5.1** fallback chain. Both models are accessed via the Anthropic SDK compatibility layer:
+
+| Priority | Model | Endpoint | Role |
+|:---:|:---|:---|:---|
+| 1 | `kimi-latest` | `https://api.kimi.com/coding/` | Primary |
+| 2 | `glm-5.1` | `https://api.z.ai/api/anthropic/` | Fallback |
+
+If Kimi fails (rate limit, quota exhausted, service unavailable), the system automatically tries GLM-5.1. Only if both models fail does it degrade to returning raw concatenated content.
+
+### 3.2. Implementation
 
 ```python
-import os
 from anthropic import AsyncAnthropic
 
+# Primary: Kimi
 kimi_client = AsyncAnthropic(
-    api_key="YOUR_KIMI_API_KEY",
+    api_key=KIMI_API_KEY,
     base_url="https://api.kimi.com/coding/"
 )
 
-async def synthesize_knowledge(extracted_md_files: list[str]) -> str:
-    if not extracted_md_files:
-        return "No content was extracted to synthesize."
-        
-    # 1. Read all intermediate markdown files
-    combined_content = []
-    for md_path in extracted_md_files:
-        if os.path.exists(md_path):
-            with open(md_path, "r", encoding="utf-8") as f:
-                combined_content.append(f.read())
-        else:
-            logging.warning(f"Expected intermediate file not found: {md_path}")
-            
-    if not combined_content:
-        return "No valid content found in the extracted files."
-    
-    full_payload = "\n\n========================================\n\n".join(combined_content)
-    
-    # 2. Instruct Kimi to synthesize
-    system_prompt = (
-        "你是一个专业的技术文档专家。我将提供一系列从原文档和图片中提取出的页面级 Markdown 数据（包含文字和Mermaid图表）。\n"
-        "请将这些零散的页面内容重新组织、提炼和综合，输出一份结构清晰、逻辑连贯的最终 Markdown 文档。\n"
-        "要求：\n"
-        "1. 保持并整合原有的 Mermaid 图表代码。\n"
-        "2. 去除重复的冗余信息。\n"
-        "3. 合理使用标题 (H1, H2, H3)、列表和加粗等格式。\n"
-        "4. 不要输出任何寒暄或解释性的废话，直接输出最终的 Markdown 文档内容。"
-    )
+# Fallback: GLM
+glm_client = AsyncAnthropic(
+    api_key=GLM_API_KEY,
+    base_url="https://api.z.ai/api/anthropic/"
+)
 
-    try:
-        response = await kimi_client.messages.create(
-            model="kimi-latest",
-            max_tokens=8192,
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": f"以下是所有提取到的页面内容：\n\n{full_payload}\n\n请进行综合整理并直接输出最终的 Markdown。"}
-            ],
-            temperature=0.3
-        )
-        
-        final_markdown = response.content[0].text
-        return final_markdown
-        
-    except Exception as e:
-        logging.error(f"Synthesis failed during Kimi API call: {e}")
-        fallback_msg = f"> **Warning**: Kimi API synthesis failed ({e}). Returning raw concatenated content below.\n\n"
-        return fallback_msg + full_payload
+async def synthesize_knowledge(extracted_md_files: list[str]) -> str:
+    # ... read and combine markdown files ...
+
+    models = []
+    if KIMI_API_KEY:
+        models.append((kimi_client, "kimi-latest", "Kimi"))
+    if GLM_API_KEY:
+        models.append((glm_client, "glm-5.1", "GLM"))
+
+    for client, model, name in models:
+        try:
+            response = await client.messages.create(
+                model=model,
+                max_tokens=8192,
+                system=SYSTEM_PROMPT,
+                messages=[...],
+                temperature=0.3
+            )
+            return response.content[0].text
+        except Exception as e:
+            logging.warning(f"{name} failed: {e}. Trying next model...")
+
+    # All models failed — degrade to raw content
+    return fallback_msg + full_payload
 ```
